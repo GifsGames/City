@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>WebGloo City V10.1 - Traffic Flow</title>
+
+<style>
+body { margin:0; overflow:hidden; font-family:Arial; background:#000; }
+
+#menu{
+  position:absolute;
+  width:100%; height:100%;
+  background:linear-gradient(#000c,#000e),
+  url("https://images.unsplash.com/photo-1501594907352-04cda38ebc29");
+  background-size:cover;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  color:white;
+}
+
+button{
+  padding:14px 28px;
+  font-size:18px;
+  border:none;
+  border-radius:10px;
+  cursor:pointer;
+}
+
+#playBtn{ background:#00ff99; }
+
+#hud{
+  position:absolute;
+  top:10px;
+  left:10px;
+  color:white;
+  background:rgba(0,0,0,0.6);
+  padding:12px;
+  display:none;
+  white-space:pre-line;
+  border-radius:10px;
+}
+
+#msg{
+  position:absolute;
+  bottom:20px;
+  left:50%;
+  transform:translateX(-50%);
+  color:white;
+  background:rgba(0,0,0,0.8);
+  padding:12px;
+  border-radius:10px;
+  display:none;
+  text-align:center;
+}
+</style>
+</head>
+
+<body>
+
+<div id="menu">
+  <h1>🚗 WEBGLOO CITY V10.1</h1>
+  <button id="playBtn">▶ PLAY</button>
+</div>
+
+<div id="hud"></div>
+<div id="msg"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+
+<script>
+
+// ===================== CORE =====================
+let scene, camera, renderer;
+
+let player, car;
+let inCar = false;
+
+let boxes = [];
+let obstacles = [];
+
+let collected = 0;
+let money = 0;
+let xp = 0;
+
+const hud = document.getElementById("hud");
+const msg = document.getElementById("msg");
+
+document.getElementById("playBtn").onclick = startGame;
+
+// ===================== START =====================
+function startGame(){
+  document.getElementById("menu").style.display = "none";
+  hud.style.display = "block";
+
+  init();
+  animate();
+  updateHUD();
+}
+
+// ===================== WORLD =====================
+function init(){
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87ceeb);
+
+  camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+
+  renderer = new THREE.WebGLRenderer();
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 1));
+
+  // chão
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(300,300),
+    new THREE.MeshStandardMaterial({color:0x2b2b2b})
+  );
+  ground.rotation.x = -Math.PI/2;
+  scene.add(ground);
+
+  // player
+  player = new THREE.Mesh(
+    new THREE.BoxGeometry(1,2,1),
+    new THREE.MeshStandardMaterial({color:0x00ff00})
+  );
+  player.position.y = 1;
+  scene.add(player);
+
+  // carro
+  car = new THREE.Mesh(
+    new THREE.BoxGeometry(2,1,4),
+    new THREE.MeshStandardMaterial({color:0xff0000})
+  );
+  car.position.set(8,0.5,8);
+  scene.add(car);
+
+  // 🔴 TAPETE VERMELHO FINAL
+  const finish = new THREE.Mesh(
+    new THREE.PlaneGeometry(12,12),
+    new THREE.MeshStandardMaterial({color:0xff0000, transparent:true, opacity:0.7})
+  );
+  finish.rotation.x = -Math.PI/2;
+  finish.position.set(130,0.01,130);
+  scene.add(finish);
+
+  spawnBoxes();
+
+  // 🚧 OBSTÁCULOS “TRÂNSITO” (DESVIO, NÃO BLOQUEIO)
+  for(let i=0;i<40;i++){
+
+    let o = new THREE.Mesh(
+      new THREE.BoxGeometry(4,4,4),
+      new THREE.MeshStandardMaterial({color:0x444444})
+    );
+
+    let x = rand(-120,120);
+    let z = rand(-120,120);
+
+    // evita travar rotas principais
+    if(Math.abs(x) < 20 && Math.abs(z) < 20){
+      x += 25;
+    }
+
+    o.position.set(x,2,z);
+    scene.add(o);
+    obstacles.push(o);
+  }
+
+  window.addEventListener("keydown", controls);
+}
+
+// ===================== BOXES NOVAS A CADA JOGO =====================
+function spawnBoxes(){
+
+  boxes.forEach(b=>scene.remove(b));
+  boxes = [];
+
+  collected = 0;
+
+  for(let i=0;i<12;i++){
+
+    let b = new THREE.Mesh(
+      new THREE.BoxGeometry(0.8,0.8,0.8),
+      new THREE.MeshStandardMaterial({color:0xffff00})
+    );
+
+    // rotas diferentes a cada partida
+    b.position.set(rand(-140,140),0.5,rand(-140,140));
+
+    scene.add(b);
+    boxes.push(b);
+  }
+}
+
+// ===================== CONTROLS =====================
+function controls(e){
+
+  let obj = inCar ? car : player;
+  let speed = inCar ? 1.4 : 0.8;
+
+  if(e.key==="e"){
+    if(player.position.distanceTo(car.position) < 4){
+      inCar = !inCar;
+    }
+  }
+
+  if(e.key==="w") obj.position.z -= speed;
+  if(e.key==="s") obj.position.z += speed;
+  if(e.key==="a") obj.position.x -= speed;
+  if(e.key==="d") obj.position.x += speed;
+
+  checkCollision(obj);
+  checkBoxes();
+  checkFinish();
+}
+
+// ===================== COLISÃO SUAVE (SÓ DESVIO) =====================
+function checkCollision(obj){
+
+  obstacles.forEach(o=>{
+    let d = obj.position.distanceTo(o.position);
+
+    if(d < 4.5){
+      obj.position.x += (obj.position.x - o.position.x) * 0.12;
+      obj.position.z += (obj.position.z - o.position.z) * 0.12;
+    }
+  });
+}
+
+// ===================== BOXES =====================
+function checkBoxes(){
+
+  boxes.forEach(b=>{
+    if(b.visible && player.position.distanceTo(b.position) < 2){
+      b.visible = false;
+      collected++;
+      money += 20;
+      xp += 10;
+      updateHUD();
+    }
+  });
+}
+
+// ===================== FINAL LIMPO =====================
+function checkFinish(){
+
+  if(collected >= 12){
+
+    let finishPos = new THREE.Vector3(130,0,130);
+
+    if(player.position.distanceTo(finishPos) < 6){
+
+      showMsg("🏁 MISSÃO COMPLETA!\n🔁 Nova rota gerada!");
+
+      setTimeout(()=>{
+        spawnBoxes();
+      }, 2000);
+    }
+  }
+}
+
+// ===================== HUD =====================
+function updateHUD(){
+  hud.innerText =
+`💰 Dinheiro: ${money}
+⭐ XP: ${xp}
+📦 Caixas: ${collected}/12
+🎯 Vá até o TAPETE VERMELHO 🔴`;
+}
+
+// ===================== MSG =====================
+function showMsg(t){
+  msg.style.display = "block";
+  msg.innerText = t;
+}
+
+// ===================== LOOP =====================
+function animate(){
+  requestAnimationFrame(animate);
+
+  let focus = inCar ? car.position : player.position;
+
+  camera.position.x = focus.x;
+  camera.position.z = focus.z + 22;
+  camera.position.y = 12;
+
+  camera.lookAt(focus);
+
+  renderer.render(scene,camera);
+}
+
+// util
+function rand(a,b){
+  return Math.random()*(b-a)+a;
+}
+
+</script>
+
+</body>
+</html>
